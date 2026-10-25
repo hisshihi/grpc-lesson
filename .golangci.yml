@@ -1,0 +1,319 @@
+# .golangci.yml — общий конфиг golangci-lint v2 для Go-сервисов MUZHIKI-PRO.
+# Стек: gRPC / PostgreSQL (pgx, GORM) / Kafka / Redis / slog / Clean Architecture.
+#
+# Конфиг не привязан к конкретному модулю: имя модуля для группировки
+# импортов берётся из go.mod (секция localmodule у gci). Его можно
+# копировать в любой сервис без правок. Правила, специфичные для проекта,
+# добавляются в конец depguard.rules (см. пример там).
+#
+# Запуск:          golangci-lint run
+# Автофикс:        golangci-lint run --fix
+# Форматирование:  golangci-lint fmt
+# Только новый код (legacy-репо): golangci-lint run --new-from-rev=HEAD~1
+# Проверка конфига: golangci-lint config verify
+
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true # линтим и _test.go — часть правил для тестов ослаблена в exclusions
+  allow-parallel-runners: true
+  # Версия Go берётся из go.mod.
+
+linters:
+  default: none # явный allow-list вместо "standard"/"all" — без сюрпризов при обновлении линтера
+
+  enable:
+    # --- Корректность / баги ---------------------------------------------
+    - errcheck # непроверенные ошибки
+    - govet # vet + доп. анализаторы (см. settings: shadow)
+    - ineffassign # бесполезные присвоения
+    - staticcheck # SA/S/ST/QF-чеки (в v2 включает бывшие gosimple/stylecheck)
+    - unused
+    - unconvert # лишние конвертации типов
+    - wastedassign
+    - nilnil # func() (T, error) не должна возвращать (nil, nil) для указателей/интерфейсов
+    - nilerr # return nil при err != nil
+    - nilnesserr
+    - makezero # make([]T, len) + append без пустого среза
+    - predeclared # затенение предопределённых идентификаторов (min, max, len...)
+    - recvcheck # согласованность receiver'ов (pointer vs value) у методов одного типа
+
+    # --- Concurrency / context ---------------------------------------------
+    - copyloopvar # лишние `v := v` для замыкания цикла (не нужны с Go 1.22)
+    - contextcheck # контекст пробрасывается по цепочке вызовов, а не создаётся заново
+    - containedctx # context.Context как поле структуры — антипаттерн
+    - fatcontext # context, накапливающий значения в цикле/горутине
+
+    # --- DB / HTTP / gRPC ---------------------------------------------------
+    - sqlclosecheck # rows/stmt.Close()
+    - rowserrcheck # обязательная проверка rows.Err() после итерации
+    - bodyclose # resp.Body.Close() для HTTP-клиентов
+    - noctx # запрос без context (http.Get вместо http.NewRequestWithContext)
+    - protogetter # доступ к полям protobuf-сообщений через геттеры (nil-safe)
+
+    # --- Ошибки ---------------------------------------------------------------
+    - errorlint # %v вместо %w, == вместо errors.Is, type assertion вместо errors.As
+    - errname # конвенции именования (ErrXxx для sentinel, XxxError для типов)
+    - exhaustive # полнота switch по enum-подобным константам
+
+    # --- Логирование ----------------------------------------------------------
+    - sloglint # единый стиль slog: ключи, контекст, без глобального логгера
+
+    # --- Безопасность --------------------------------------------------------
+    - gosec
+
+    # --- Архитектура ---------------------------------------------------------
+    - depguard # запрещённые зависимости между слоями (правила в settings)
+
+    # --- Сложность / поддерживаемость ----------------------------------------
+    - cyclop # цикломатическая сложность (функция + средняя по пакету)
+    - funlen
+    - nestif # глубокая вложенность if
+    - gocritic # diagnostic+performance+style чеки, ловит много реальных багов
+    - goconst # повторяющиеся строковые литералы
+    - prealloc # предварительный размер слайсов в range-циклах
+    - interfacebloat # «толстые» интерфейсы — сигнал нарушения ISP
+    - unparam # неиспользуемые параметры функций
+    - dupl # дублирование кода (порог поднят — иначе шумит на CRUD)
+    - durationcheck # умножение time.Duration на число (классическая опечатка)
+    - perfsprint # fmt.Sprintf там, где хватает strconv / конкатенации
+
+    # --- Стиль / гигиена / современные идиомы --------------------------------
+    - revive # замена golint, набор правил ниже
+    - misspell
+    - whitespace
+    - gocheckcompilerdirectives # валидность //go:build, //go:generate и т.д.
+    - nolintlint # //nolint только с указанием линтера и причины
+    - gochecknoinits # init() — неявная магия, зависимости собираем явно
+    - mnd # magic numbers
+    - intrange # `for i := range n` вместо classic for
+    - usestdlibvars # http.MethodGet/http.StatusOK вместо литералов
+    - modernize # модернизация кода под версию Go из go.mod
+    - usetesting # t.Context()/t.TempDir() вместо context.Background()/os.MkdirTemp() в тестах
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - (io.Closer).Close
+        - (net/http.ResponseWriter).Write
+
+    govet:
+      enable:
+        - shadow # затенение переменных — частый источник багов
+
+    staticcheck:
+      checks:
+        - all
+
+    cyclop:
+      max-complexity: 15
+      package-average: 10.0
+
+    funlen:
+      lines: 100
+      statements: 60
+      ignore-comments: true
+
+    nestif:
+      min-complexity: 5
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - whyNoLint # дублирует nolintlint
+        - unnamedResult # слишком шумный на простых (T, error)
+      settings:
+        hugeParam:
+          sizeThreshold: 128 # value objects ~100 байт передаём по значению осознанно
+        rangeValCopy:
+          sizeThreshold: 512
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+
+    interfacebloat:
+      max: 10
+
+    unparam:
+      check-exported: false # не проверяем экспортируемые контракты (интерфейсы репозиториев)
+
+    dupl:
+      threshold: 150
+
+    exhaustive:
+      default-signifies-exhaustive: true # switch с default считается исчерпывающим
+
+    mnd:
+      checks:
+        - argument
+        - case
+        - condition
+        - operation
+        - return
+        - assign
+      ignored-numbers:
+        - "0"
+        - "1"
+        - "2"
+      ignored-functions:
+        - strconv.*
+
+    gosec:
+      excludes:
+        - G104 # дублирует errcheck
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+
+    sloglint:
+      no-mixed-args: true # не смешивать "key", val и slog.Attr в одном вызове
+      kv-only: true # только пары "key", val — короче и единообразно
+      no-global: all # никаких slog.Info(...): логгер передаётся явно через DI
+      context: scope # если в функции есть ctx — использовать *Context-методы
+      key-naming-case: snake # user_id, salon_id — как в остальных сервисах
+      forbidden-keys:
+        - error # ошибку логируем под ключом "err" — одно имя для поиска в логах
+
+    perfsprint:
+      strconcat: false # "a" + b vs fmt.Sprintf("a%s", b) — дело вкуса, не шумим
+
+    depguard:
+      rules:
+        # Домен — чистые типы и правила, без инфраструктуры.
+        domain:
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: github.com/jackc/pgx
+              desc: домен не знает про БД — маппинг строк в репозитории
+            - pkg: gorm.io/gorm
+              desc: домен не знает про БД — маппинг строк в репозитории
+            - pkg: google.golang.org/grpc
+              desc: домен не знает про транспорт
+            - pkg: github.com/MUZHIKI-PRO/verifier
+              desc: домен не знает про IAM — адаптер в repository
+        # pb-типы verifier не выходят за пределы адаптера IAM.
+        verifier-pb:
+          files:
+            - $all
+            - "!**/internal/repository/**"
+          deny:
+            - pkg: github.com/MUZHIKI-PRO/verifier/pb
+              desc: pb-типы verifier используются только в адаптере repository
+        # Устаревшие пакеты.
+        deprecated:
+          files:
+            - $all
+          deny:
+            - pkg: io/ioutil
+              desc: устарел с Go 1.16 — используй os и io
+            - pkg: github.com/pkg/errors
+              desc: используй errors и fmt.Errorf с %w
+            - pkg: golang.org/x/exp/slices
+              desc: есть в stdlib — slices
+            - pkg: golang.org/x/exp/maps
+              desc: есть в stdlib — maps
+
+        # Пример правила, специфичного для проекта (имя модуля своё в каждом сервисе):
+        #
+        # foreign-pb:
+        #   files:
+        #     - $all
+        #     - "!**/internal/repository/**"
+        #     - "!**/internal/api/pb/**"
+        #   deny:
+        #     - pkg: github.com/MUZHIKI-PRO/<сервис>/internal/api/pb
+        #       desc: pb-типы чужих сервисов используются только в repository-клиентах
+
+    revive:
+      rules:
+        - name: exported
+        - name: var-naming
+        - name: indent-error-flow
+        - name: error-strings
+        - name: error-return
+        - name: errorf
+        - name: unreachable-code
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: increment-decrement
+        - name: receiver-naming
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: redefines-builtin-id
+        - name: empty-block
+        - name: early-return
+
+  exclusions:
+    # lax: исключает файлы с заголовком «Code generated ... DO NOT EDIT»
+    # (protoc, mockgen, sqlc и т.п.), отдельные пути для них не нужны.
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # В тестах часть проверок избыточна и мешает table-driven тестам
+      - path: _test\.go
+        linters:
+          - gosec
+          - dupl
+          - funlen
+          - cyclop
+          - mnd
+          - containedctx
+          - goconst # table-driven тесты легитимно повторяют "success"/"error"
+    paths:
+      - '.*\.pb\.go$' # на случай pb-файлов без заголовка генератора
+
+formatters:
+  enable:
+    - gofumpt # строже gofmt
+    - gci # детерминированная группировка импортов
+
+  settings:
+    gofumpt:
+      extra:
+        group-params: true # func f(a, b int) вместо func f(a int, b int)
+    gci:
+      sections:
+        - standard # stdlib
+        - default # сторонние пакеты
+        - localmodule # пакеты текущего модуля — имя берётся из go.mod
+
+  exclusions:
+    generated: lax
+    paths:
+      - '.*\.pb\.go$'
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  fix: false
+
+output:
+  sort-order:
+    - file
+    - linter
+
+severity:
+  default: error
+  rules:
+    - linters:
+        - dupl
+      severity: info
